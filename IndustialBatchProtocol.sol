@@ -8,7 +8,8 @@ pragma solidity ^0.8.0;
  */
 contract IndustrialBatchProtocol {
     
-    enum BatchStatus { Scheduled, InProcess, QualityCheck, Approved, Burned }
+    // 1. UPDATE: Added 'Shipped' to the status list so we can track the final step
+    enum BatchStatus { Scheduled, InProcess, QualityCheck, Approved, Burned, Shipped }
     
     struct Batch {
         uint256 id;
@@ -21,26 +22,40 @@ contract IndustrialBatchProtocol {
 
     mapping(uint256 => Batch) public batches;
     mapping(address => uint8) public operatorTier; // Tiers 1-5
-    mapping(uint256 => uint8) public vesselTierRequirement; // Vessel specific requirements
+    mapping(uint256 => uint8) public vesselTierRequirement; 
     
+    // 2. NEW: Supervisor State Variable
+    address public supervisor;
+
     event EventAnnouncement(uint256 indexed batchId, string message, uint256 timestamp);
     event BatchScrapped(uint256 indexed batchId, string reason);
+    // 3. NEW: Specific Event for Shipping
+    event BatchShipped(uint256 indexed batchId, address approvedBy);
 
-    // Modifier: Ensures Operator has the correct Tier for the specific Vessel
+    // 4. NEW: Constructor to set the Supervisor when deployed
+    constructor() {
+        supervisor = msg.sender;
+    }
+
+    // Modifier: Ensures Operator has the correct Tier
     modifier onlyQualified(uint256 _vesselId) {
         require(operatorTier[msg.sender] >= vesselTierRequirement[_vesselId], 
         "SECURITY: Operator tier insufficient for this vessel.");
         _;
     }
 
-    // Modifier: High-trust Governance for QC and Managers
+    // Modifier: High-trust Governance
     modifier onlyRole(bytes32 role) {
-        // Implementation of Role-Based Access Control
+        // Implementation of Role-Based Access Control logic would go here
         _;
     }
 
-    /** * @notice The "Physical Handshake" - Operator scans Vessel via NFC
-     */
+    // 5. NEW: The Supervisor Modifier
+    modifier onlySupervisor() {
+        require(msg.sender == supervisor, "Only the supervisor can perform this action");
+        _;
+    }
+
     function startBatch(uint256 _batchId, uint256 _vesselId) external onlyQualified(_vesselId) {
         batches[_batchId].status = BatchStatus.InProcess;
         batches[_batchId].currentOperator = msg.sender;
@@ -50,10 +65,7 @@ contract IndustrialBatchProtocol {
         emit EventAnnouncement(_batchId, "Batch started via Biometric/NFC Handshake", block.timestamp);
     }
 
-    /** * @notice Automated IoT Event Logging (The 20-minute heartbeat)
-     */
     function logProcessUpdate(uint256 _batchId, bool _isSpecGood) external {
-        // Logic to prevent congestion: only log every 20 mins unless Out of Spec
         require(block.timestamp >= batches[_batchId].lastEventTimestamp + 20 minutes || !_isSpecGood, 
         "Network Optimization: Update interval not reached.");
 
@@ -66,14 +78,10 @@ contract IndustrialBatchProtocol {
         batches[_batchId].lastEventTimestamp = block.timestamp;
     }
 
-    /** * @notice Manager Override: Required when RFID/NFC hardware fails
-     */
     function managerBypass(uint256 _batchId) external onlyRole("MANAGER_ROLE") {
         emit EventAnnouncement(_batchId, "MANAGER OVERRIDE: Physical witness verified for QR scan.", block.timestamp);
     }
 
-    /** * @notice Final Governance: QC Approves or Burns the NFT
-     */
     function finalizeBatch(uint256 _batchId, bool _approved) external onlyRole("QC_TECH") {
         if (_approved && !batches[_batchId].outOfSpec) {
             batches[_batchId].status = BatchStatus.Approved;
@@ -81,5 +89,17 @@ contract IndustrialBatchProtocol {
             batches[_batchId].status = BatchStatus.Burned;
             emit BatchScrapped(_batchId, "Failed Quality Standards or Manual Scrap Triggered");
         }
+    }
+
+    // 6. NEW: The Shipping Logic
+    // This connects the "Approved" status to the "Logistics" world
+    function approveForShipping(uint256 _batchId) external onlySupervisor {
+        // Logic Check: Can't ship something that hasn't been approved by QC yet
+        require(batches[_batchId].status == BatchStatus.Approved, "Batch must be QC Approved before shipping");
+        
+        batches[_batchId].status = BatchStatus.Shipped;
+        
+        emit BatchShipped(_batchId, msg.sender);
+        emit EventAnnouncement(_batchId, "LOGISTICS: Batch released to carrier", block.timestamp);
     }
 }
