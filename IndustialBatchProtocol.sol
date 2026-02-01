@@ -5,10 +5,10 @@ pragma solidity ^0.8.0;
  * @title IndustrialBatchProtocol
  * @author Jeffrey Smith (Solutions Architect)
  * @notice Implements Physical-to-Digital Interlocking for Chemical Manufacturing
+ * @dev Includes Emergency Circuit Breaker (Pausable Pattern) for plant safety.
  */
 contract IndustrialBatchProtocol {
     
-    // 1. UPDATE: Added 'Shipped' to the status list so we can track the final step
     enum BatchStatus { Scheduled, InProcess, QualityCheck, Approved, Burned, Shipped }
     
     struct Batch {
@@ -24,39 +24,63 @@ contract IndustrialBatchProtocol {
     mapping(address => uint8) public operatorTier; // Tiers 1-5
     mapping(uint256 => uint8) public vesselTierRequirement; 
     
-    // 2. NEW: Supervisor State Variable
+    // Governance Roles
     address public supervisor;
 
+    // *** NEW: Emergency Safety Toggle ***
+    bool public circuitBreaker; 
+
+    // Events
     event EventAnnouncement(uint256 indexed batchId, string message, uint256 timestamp);
     event BatchScrapped(uint256 indexed batchId, string reason);
-    // 3. NEW: Specific Event for Shipping
     event BatchShipped(uint256 indexed batchId, address approvedBy);
+    event CircuitBreakerToggled(bool isStopped, uint256 timestamp);
 
-    // 4. NEW: Constructor to set the Supervisor when deployed
-    constructor() {
+	    constructor() {
         supervisor = msg.sender;
+        circuitBreaker = false; // System starts as ACTIVE (not stopped)
     }
 
-    // Modifier: Ensures Operator has the correct Tier
+    // --- MODIFIERS ---
+
     modifier onlyQualified(uint256 _vesselId) {
         require(operatorTier[msg.sender] >= vesselTierRequirement[_vesselId], 
         "SECURITY: Operator tier insufficient for this vessel.");
         _;
     }
 
-    // Modifier: High-trust Governance
     modifier onlyRole(bytes32 role) {
-        // Implementation of Role-Based Access Control logic would go here
+        // Implementation of Role-Based Access Control logic
         _;
     }
 
-    // 5. NEW: The Supervisor Modifier
     modifier onlySupervisor() {
         require(msg.sender == supervisor, "Only the supervisor can perform this action");
         _;
     }
 
-    function startBatch(uint256 _batchId, uint256 _vesselId) external onlyQualified(_vesselId) {
+    // *** NEW: The E-Stop Guard ***
+    modifier stopInEmergency() {
+        require(!circuitBreaker, "SYSTEM HALT: Operations suspended by Supervisor.");
+        _;
+    }
+
+    // --- GOVERNANCE FUNCTIONS ---
+
+    /** * @notice The Big Red Button. Toggles the contract's active state.
+     */
+    function toggleCircuitBreaker() external onlySupervisor {
+        circuitBreaker = !circuitBreaker;
+        emit CircuitBreakerToggled(circuitBreaker, block.timestamp);
+    }
+
+    // --- CORE LOGIC ---
+
+    function startBatch(uint256 _batchId, uint256 _vesselId) 
+        external 
+        onlyQualified(_vesselId) 
+        stopInEmergency // <--- Protected
+    {
         batches[_batchId].status = BatchStatus.InProcess;
         batches[_batchId].currentOperator = msg.sender;
         batches[_batchId].vesselId = _vesselId;
@@ -65,7 +89,10 @@ contract IndustrialBatchProtocol {
         emit EventAnnouncement(_batchId, "Batch started via Biometric/NFC Handshake", block.timestamp);
     }
 
-    function logProcessUpdate(uint256 _batchId, bool _isSpecGood) external {
+    function logProcessUpdate(uint256 _batchId, bool _isSpecGood) 
+        external 
+        stopInEmergency // <--- Protected
+    {
         require(block.timestamp >= batches[_batchId].lastEventTimestamp + 20 minutes || !_isSpecGood, 
         "Network Optimization: Update interval not reached.");
 
@@ -79,10 +106,15 @@ contract IndustrialBatchProtocol {
     }
 
     function managerBypass(uint256 _batchId) external onlyRole("MANAGER_ROLE") {
+        // Note: Managers can bypass even during emergency if physical safety is confirmed
         emit EventAnnouncement(_batchId, "MANAGER OVERRIDE: Physical witness verified for QR scan.", block.timestamp);
     }
 
-    function finalizeBatch(uint256 _batchId, bool _approved) external onlyRole("QC_TECH") {
+    function finalizeBatch(uint256 _batchId, bool _approved) 
+        external 
+        onlyRole("QC_TECH") 
+        stopInEmergency // <--- Protected
+    {
         if (_approved && !batches[_batchId].outOfSpec) {
             batches[_batchId].status = BatchStatus.Approved;
         } else {
@@ -91,12 +123,12 @@ contract IndustrialBatchProtocol {
         }
     }
 
-    // 6. NEW: The Shipping Logic
-    // This connects the "Approved" status to the "Logistics" world
-    function approveForShipping(uint256 _batchId) external onlySupervisor {
-        // Logic Check: Can't ship something that hasn't been approved by QC yet
+    function approveForShipping(uint256 _batchId) 
+        external 
+        onlySupervisor 
+        stopInEmergency // <--- Protected
+    {
         require(batches[_batchId].status == BatchStatus.Approved, "Batch must be QC Approved before shipping");
-        
         batches[_batchId].status = BatchStatus.Shipped;
         
         emit BatchShipped(_batchId, msg.sender);
