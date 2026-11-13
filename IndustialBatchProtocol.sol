@@ -3,7 +3,7 @@ pragma solidity ^0.8.0;
 
 /**
  * @title IndustrialBatchProtocol
- * @author Jeffrey Smith (Solutions Architect)
+ * @author James Smith (Solutions Architect)
  * @notice Implements Physical-to-Digital Interlocking for Chemical Manufacturing
  * @dev Includes Emergency Circuit Breaker (Pausable Pattern) for plant safety.
  */
